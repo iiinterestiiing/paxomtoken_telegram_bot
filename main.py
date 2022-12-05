@@ -1,6 +1,6 @@
 from aiogram import Bot, Dispatcher, executor, types
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from random import randint
 from time import time
 
@@ -15,25 +15,25 @@ dp = Dispatcher(bot)
 def now() -> int:
 	return int(round(time()))
 
-def time_to_date(time) -> str:
+def timestamp_to_date(time) -> str:
 	return datetime.utcfromtimestamp(time).strftime('%Y/%m/%d')
 	
 
 class Transaction:
 
-	def __init__(self, sender_bot_id: int, recipient_bot_id: int, amount: int):
-		self.sender_bot_id = sender_bot_id
-		self.recipient_bot_id = recipient_bot_id
+	def __init__(self, sender_network_id: int, recipient_network_id: int, amount: int):
+		self.sender_network_id = sender_network_id
+		self.recipient_network_id = recipient_network_id
 		self.amount = amount
-		self.date = now()
+		self.timestamp = now()
 
 
 class Mining:
 
-	def __init__(self, miner_bot_id: int, reward: int):
-		self.miner_bot_id = miner_bot_id
+	def __init__(self, miner_network_id: int, reward: int):
+		self.miner_network_id = miner_network_id
 		self.reward = reward
-		self.date = now()
+		self.timestamp = now()
 
 
 class User:
@@ -45,43 +45,118 @@ class User:
 		self.network_id = network_id
 		self.mining_cooldown = mining_cooldown
 		self.mining_reward = mining_reward
-		self.registration_date = now()
+		self.timestamp = now()
+
 		self.mining_history = []
 		self.transactions = []
-		self.balance = 0
 
-	def all_mined(self, history: list) -> int:
+		self.balance = 0
+		self.cooldown_reduction = 0
+		self.reward_raise = 0
+
+	def all_mined(self) -> int:
 		mined = 0
 
-		for mining_history_unit in mining_history:
+		for mining_history_unit in self.mining_history:
 			mined += mining_history_unit.reward
 
 		return mined
 
-	def mined_for(self, date: str) -> int:
+	def mined(self, timestamp: int) -> int:
+		date = timestamp_to_date(timestamp)
 		mined = 0
 
 		for mining_history_unit in self.mining_history:
-			if time_to_date(mining_history_unit.date) == date:
+			if timestamp_to_date(mining_history_unit.timestamp) == date:
 				mined += mining_history_unit.reward
-			else:
-				break
 
 		return mined
 
 	def mined_today(self) -> int:
-		date = time_to_date(now()-24*60*60)
-		mined = self.mined_for(today_date)
-		return mined
+		return self.mined(now())
 
 	def mined_yesterday(self) -> int:
-		date = time_to_date(now()-datetime(date=1).total_seconds())
-		mined = self.mined_for(date)
-		return mined
+		return self.mined(now()-timedelta(days=1).total_seconds())
 
-	def last_mining_date(self):
+	def all_received(self) -> int:
+		received = 0
+
+		for transaction in self.transactions:
+			if transaction.recipient_network_id == self.network_id:
+				received += transaction.amount
+
+		return received
+
+	def received(self, timestamp: int) -> int:
+		date = timestamp_to_date(timestamp)
+		received = 0
+
+		for transaction in self.transactions:
+			if transaction.recipient_network_id == self.network_id:
+				if timestamp_to_date(transaction.timestamp) == date:
+					received += transaction.amount
+
+		return received
+
+	def received_today(self) -> int:
+		return self.received(now())
+
+	def received_yesterday(self) -> int:
+		return self.received(now()-timedelta(days=1).total_seconds())
+
+	def all_sended(self) -> int:
+		sended = 0
+
+		for transaction in self.transactions:
+			if transaction.sender_network_id == self.network_id:
+				sended += transaction.amount
+
+		return sended
+
+	def sended(self, timestamp: int) -> int:
+		date = timestamp_to_date(timestamp)
+		sended = 0
+
+		for transaction in self.transactions:
+			if transaction.sender_network_id == self.network_id:
+				if timestamp_to_date(transaction.timestamp) == date:
+					sended += transaction.amount
+
+		return sended
+
+	def sended_today(self) -> int:
+		return self.sended(now())
+
+	def sended_yesterday(self) -> int:
+		return self.sended(now()-timedelta(days=1).total_seconds())
+
+	def senders_top(self) -> dict:
+		senders = {}
+
+		for transaction in self.transactions:
+			if transaction.recipient_network_id == self.network_id:
+				if transaction.sender_network_id not in senders:
+					senders[transaction.sender_network_id] = transaction.amount
+				else:
+					senders[transaction.sender_network_id] += transaction.amount
+
+		return senders
+
+	def recipients_top(self) -> dict:
+		recipients = {}
+
+		for transaction in self.transactions:
+			if transaction.sender_network_id == self.network_id:
+				if transaction.recipient_network_id not in recipients:
+					recipients[transaction.recipient_network_id] = transaction.amount
+				else:
+					recipients[transaction.recipient_network_id] += transaction.amount
+
+		return recipients
+
+	def last_mining_timestamp(self) -> int:
 		if len(self.mining_history) > 0:
-			return self.mining_history[-1].date
+			return self.mining_history[-1].timestamp
 		else:
 			return 0
 
@@ -93,7 +168,7 @@ class Network:
 
 	mining_cooldown = config.MINING_COOLDOWN
 	mining_reward = config.MINING_REWARD
-	tokens_limit = config.TOKENS_LIMIT
+	coins_limit = config.COINS_LIMIT
 
 	def __init__(self):
 		self.users = []
@@ -106,6 +181,33 @@ class Network:
 	def actual_id() -> int:
 		return self.users_count() + 1
 
+	def transactions_count() -> int:
+		return len(self.transactions)
+
+	def all_mined() -> int:
+		mined = 0
+
+		for mining_history_unit in self.mining_history:
+			mined += mining_history_unit.reward
+
+		return mined
+
+	def mined(timestamp: int) -> int:
+		date = timestamp_to_date(timestamp)
+		mined = 0
+
+		for mining_history_unit in self.mining_history:
+			if timestamp_to_date(mining_history_unit.timestamp) == date:
+				mined += mining_history_unit.reward
+
+		return mined
+
+	def mined_today() -> int:
+		return self.mined(now())
+
+	def mined_yesterday() -> int:
+		return self.mined(now()-timedelta(days=1).total_seconds())
+
 	def is_registred(self, telegram_id: int) -> bool:
 		for user in self.users:
 			if user.telegram_id == telegram_id:
@@ -113,9 +215,9 @@ class Network:
 		else:
 			return False
 
-	def get_user_from_bot_id(self, bot_id: int) -> User or None:
+	def get_user_from_network_id(self, network_id: int) -> User or None:
 		for user in self.users:
-			if user.bot_id == bot_id:
+			if user.network_id == network_id:
 				return User
 		else:
 			return None
@@ -133,18 +235,18 @@ class Network:
 
 	def mine(self, telegram_id: int):
 		user = self.get_user(telegram_id)
-		mining_history_unit = Mining(user.bot_id, user.mining_reward)
+		mining_history_unit = Mining(user.network_id, user.mining_reward)
 
 		user.balance += user.mining_reward
 
 		self.mining_history.append(mining_history_unit)
 		user.append(mining_history_unit)
 
-	def transfer(self, telegram_id: int, bot_id: int, amount: int):
+	def transfer(self, telegram_id: int, network_id: int, amount: int):
 		user = self.get_user(telegram_id)
-		recipient = self.get_user_from_bot_id(bot_id)
+		recipient = self.get_user_from_network_id(network_id)
 
-		transaction_history_unit = Transaction(user.bot_id, recipient.bot_id, amount)
+		transaction_history_unit = Transaction(user.network_id, recipient.bot_id, amount)
 
 		user.balance -= amount
 		user.transactions.append(transaction_history_unit)
@@ -155,9 +257,9 @@ class Network:
 		self.transactions.append(transaction_history_unit)
 
 
-@dp.message_handler(commands=["start"])
+@dp.message_handler(commands=["start", "reg"])
 async def start(message: types.Message):
-	print(message)
+	pass
 
 
 #if __name__ == "__main__":
