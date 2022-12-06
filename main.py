@@ -1,3 +1,7 @@
+
+
+# Импорт необходимых модулей
+
 from aiogram import Bot, Dispatcher, executor, types
 
 from datetime import datetime, timedelta
@@ -6,11 +10,15 @@ from time import time
 
 import config
 import dill
+import os
 
 
+# Инициализация объекта бота и диспетчера
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher(bot)
 
+
+# Функции для UNIX времени и дат
 
 def now() -> int:
 	return int(round(time()))
@@ -18,6 +26,18 @@ def now() -> int:
 def timestamp_to_date(time) -> str:
 	return datetime.utcfromtimestamp(time).strftime('%Y/%m/%d')
 	
+
+# Информация о снятии токенов
+
+class Payment:
+
+	def __init__(self, payer_network_id: int, amount: int):
+		self.payer_network_id = payer_network_id
+		self.amount = amount
+		self.timestamp = now()
+
+
+# Информация о переводе между 2 пользователями
 
 class Transaction:
 
@@ -28,6 +48,8 @@ class Transaction:
 		self.timestamp = now()
 
 
+# Информация о майнинге
+
 class Mining:
 
 	def __init__(self, miner_network_id: int, reward: int):
@@ -36,29 +58,38 @@ class Mining:
 		self.timestamp = now()
 
 
+# Класс пользователя для дальнейшего добавления в общую сеть
+
 class User:
 
-	def __init__(self, telegram_id: int, network_id: int,
-			mining_cooldown: int, mining_reward: int):
+	def __init__(self, telegram_id: int, network_id: int, username: str,
+			mining_cooldown: int, mining_reward: int, month_payment: int):
 
 		self.telegram_id = telegram_id
 		self.network_id = network_id
 		self.mining_cooldown = mining_cooldown
 		self.mining_reward = mining_reward
+		self.month_payment = month_payment
 		self.timestamp = now()
 
+		self.payments_history = []
 		self.mining_history = []
 		self.transactions = []
 
+		self.partner_network_id = 0
 		self.balance = 0
-		self.cooldown_reduction = 0
-		self.reward_raise = 0
+
+	def next_payment_timestamp() -> int:
+		if len(self.payments_history) > 0:
+			return self.payments_history[-1].timestamp
+		else:
+			return now()+timedelta(days=30).total_seconds()
 
 	def all_mined(self) -> int:
 		mined = 0
 
-		for mining_history_unit in self.mining_history:
-			mined += mining_history_unit.reward
+		for mining_unit in self.mining_history:
+			mined += mining_unit.reward
 
 		return mined
 
@@ -66,9 +97,9 @@ class User:
 		date = timestamp_to_date(timestamp)
 		mined = 0
 
-		for mining_history_unit in self.mining_history:
-			if timestamp_to_date(mining_history_unit.timestamp) == date:
-				mined += mining_history_unit.reward
+		for mining_unit in self.mining_history:
+			if timestamp_to_date(mining_unit.timestamp) == date:
+				mined += mining_unit.reward
 
 		return mined
 
@@ -162,13 +193,20 @@ class User:
 
 	def is_on_cooldown(self) -> bool:
 		return now() - self.last_mining_date < self.mining_cooldown
+
+	def have_partner(self) -> bool:
+		return self.partner_network_id != 0
 	
+
+# Общая сеть, содержащая список пользователей, список всех транзакций, историй майнинга и т.п.
 
 class Network:
 
 	mining_cooldown = config.MINING_COOLDOWN
 	mining_reward = config.MINING_REWARD
-	coins_limit = config.COINS_LIMIT
+	tokens_limit = config.TOKENS_LIMIT
+	upgrade_price = config.UPGRADE_PRICE
+	month_payment = config.MONTH_PAYMENTS
 
 	def __init__(self):
 		self.users = []
@@ -187,8 +225,8 @@ class Network:
 	def all_mined() -> int:
 		mined = 0
 
-		for mining_history_unit in self.mining_history:
-			mined += mining_history_unit.reward
+		for mining_unit in self.mining_history:
+			mined += mining_unit.reward
 
 		return mined
 
@@ -196,9 +234,9 @@ class Network:
 		date = timestamp_to_date(timestamp)
 		mined = 0
 
-		for mining_history_unit in self.mining_history:
-			if timestamp_to_date(mining_history_unit.timestamp) == date:
-				mined += mining_history_unit.reward
+		for mining_unit in self.mining_history:
+			if timestamp_to_date(mining_unit.timestamp) == date:
+				mined += mining_unit.reward
 
 		return mined
 
@@ -229,38 +267,70 @@ class Network:
 		else:
 			return None
 
-	def add_user(self, telegram_id: int):
-		user = User(telegram_id, self.actual_id(), self.mining_reward)
+	def add_user(self, telegram_id: int, username: str):
+		user = User(telegram_id, self.actual_id(), self.username,
+				self.mining_cooldown, self.mining_reward,
+				self.month_payment)
+
 		self.users.append(user)
 
 	def mine(self, telegram_id: int):
 		user = self.get_user(telegram_id)
-		mining_history_unit = Mining(user.network_id, user.mining_reward)
+		mining_unit = Mining(user.network_id, user.mining_reward)
 
 		user.balance += user.mining_reward
 
-		self.mining_history.append(mining_history_unit)
+		self.mining_history.append(mining_unit)
 		user.append(mining_history_unit)
 
 	def transfer(self, telegram_id: int, network_id: int, amount: int):
 		user = self.get_user(telegram_id)
 		recipient = self.get_user_from_network_id(network_id)
 
-		transaction_history_unit = Transaction(user.network_id, recipient.bot_id, amount)
+		transaction = Transaction(user.network_id, recipient.bot_id, amount)
 
 		user.balance -= amount
-		user.transactions.append(transaction_history_unit)
+		user.transactions.append(transaction)
 
 		recipient.balance += amount
-		recipient.transactions.append(transaction_history_unit)
+		recipient.transactions.append(transaction)
 
-		self.transactions.append(transaction_history_unit)
+		self.transactions.append(transaction)
+
+	def payment(self, telegram_id: int):
+		user = self.get_user(telegram_id)
+		payment = Payment(user.network_id, user.month_payment)
+		user.balance -= user.month_payment
+
+	def take_partner(self, telegram_id: int, network_id: int):
+		user = get_user(telegram_id)
+		partner = get_user_from_network_id(network_id)
+
+		user.month_payment /= 2
+		partner.month_payment /= 2
+
+	def delete_partner(self, telegram_id: int):
+		user = self.get_user(telegram_id)
+		partner = self.get_user_from_network_id(user.partner_network_id)
+
+		user.month_payment *= 2
+		partner.month_payment *= 2
+
+		user.partner_network_id = 0
 
 
-@dp.message_handler(commands=["start", "reg"])
-async def start(message: types.Message):
-	pass
+# Загрузка сети
+
+def load_network(path: str) -> Network:
+	if os.path.exists(path) and os.path.getsize(path) > 0:
+		with open(path, "rb") as file:
+			return dill.load(file)
+
+# Сохранение изменений в сети
+
+def save_network(path: str, network: Network):
+	with open(path, "wb") as file:
+		dill.dump(network, file)
 
 
-#if __name__ == "__main__":
-	#executor.start_polling(dispatcher=dp, skip_updates=True)
+# Дальше будет привязка комманд к вышеперечисленным объектам 
